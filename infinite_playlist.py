@@ -1,8 +1,7 @@
 """
 Author: Mitch Parry
-Modified By: Coley Pritchett
+Modification: Coley Pritchett (added transitions)
 """
-
 import os
 import bisect
 from scipy.sparse import dok_matrix
@@ -17,11 +16,13 @@ import echonest.remix.audio as audio
 import shutil
 from cAction import crossfade
 from echonest.remix.audio import AudioData
+import numpy as np
 
 
 AUDIO_EXTENSIONS = {'mp3', 'm4a', 'wav', 'ogg', 'au', 'mp4'}
 PLAYLIST_DIR = 'playlist'
-THRESHOLD = 55
+#Lower the threshold if the music sounds choppy
+THRESHOLD = 70
 SPOT_DIR = 'spotify'
 SPOT_PLAY = PLAYLIST_DIR + os.sep + 'spotify.play.pkl'
 DT = .005
@@ -327,7 +328,8 @@ class Playback(object):
     ghost = 1
 
     def __init__(self, all_edges_, local_audio_, aq_players_, start_beats_, thread=None, curr_md5=None, curr_beat=None):
-        from random import choice
+        from random import choice, seed
+        #seed(5)
         self.all_edges = all_edges_
         self.local_audio = local_audio_
         self.aq_players = aq_players_
@@ -368,6 +370,7 @@ class Playback(object):
             # print candidates
             # flip a coin
             if random() < self.curr_branch_probability:
+                #Beat is rendered so the audio data can be obtained for the crossfade function
                 first_rendered_beat = self.curr_laf.analysis.beats[self.curr_beat].render()
                 print "Branch!!!"
                 branch = choice(candidates)
@@ -381,12 +384,30 @@ class Playback(object):
                 self.last_branch[1] = [self.curr_beat + self.start_beats[self.curr_md5]]
                 branched = True
 
-                #Transition
+                #Next beat is also rendered
                 second_rendered_beat = self.curr_laf.analysis.beats[self.curr_beat].render()
-                vecout = crossfade(first_rendered_beat.data, second_rendered_beat.data, 'exponential')
-                audio_out = AudioData(ndarray=vecout, shape=vecout.shape,
+
+                #Which beat is shorter
+                min_len = min(first_rendered_beat.data.shape[0], second_rendered_beat.data.shape[0])
+                first = first_rendered_beat.data[0:min_len, :]
+                second = second_rendered_beat.data[0:min_len, :]
+
+                #Crossfade between two beats of the same length
+                third = crossfade(first, second, 'linear')
+
+                #If the first beat is longer...
+                if first_rendered_beat.data.shape[0] > second_rendered_beat.data.shape[0]:
+                    audio_out = AudioData(ndarray=third, shape=third.shape,
                                 sampleRate=first_rendered_beat.sampleRate,
-                               numChannels=vecout.shape[1])
+                               numChannels=third.shape[1])
+                #If the second beat is longer...
+                else:
+                    #The crossfade replaces the first part of the second beat
+                    second_rendered_beat.data[0:min_len, :] = third
+                    audio_out = AudioData(ndarray=second_rendered_beat.data, shape=second_rendered_beat.data.shape,
+                                sampleRate=first_rendered_beat.sampleRate,
+                               numChannels=second_rendered_beat.data.shape[1])
+
                 self.curr_player.play_audio_data(audio_out)
                 self.curr_beat = (self.curr_beat + 1) % len(self.curr_laf.analysis.beats)
 
@@ -400,6 +421,8 @@ class Playback(object):
             else:
                 self.curr_branch_probability = min(self.max_branch_probability,
                                                    self.curr_branch_probability + self.step_branch_probability)
+        #self.curr_player.play(self.curr_laf.analysis.beats[self.curr_beat])
+        #self.curr_beat = (self.curr_beat + 1) % len(self.curr_laf.analysis.beats)
         # update cursor
         t0 = self.curr_beat + self.start_beats[self.curr_md5]
         cursor_.set_xdata(t0)
